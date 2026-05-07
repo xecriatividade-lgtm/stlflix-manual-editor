@@ -244,11 +244,21 @@ body{
 .pv-sec-body{padding-left:0}
 .pv-text{font-size:14px;color:#444;line-height:1.75}
 
-/* Spec image */
+/* Spec two-column layout */
+.pv-spec-cols{
+  display:flex;align-items:center;gap:28px;
+}
+.pv-spec-cols.reverse{ flex-direction:row-reverse; }
+.pv-spec-img-wrap{
+  flex:0 0 42%;max-width:42%;
+}
 .pv-spec-img{
-  width:100%;max-height:300px;object-fit:contain;
+  width:100%;max-height:280px;object-fit:contain;
   border-radius:8px;border:1px solid #f0f0f0;
-  margin-bottom:12px;display:block;background:#fafafa;
+  display:block;background:#fafafa;
+}
+.pv-spec-txt-wrap{
+  flex:1;min-width:0;
 }
 
 /* Kit cover */
@@ -810,6 +820,8 @@ function pv(){
   const visSps = S.specs.filter(s => s.title||s.image||s.text);
   visSps.forEach((sp,i) => {
     secN++;
+    const reverse = (i % 2 === 1) ? ' reverse' : '';
+    const hasBoth = sp.image && sp.text;
     parts.push(`
       <div class="pv-sec">
         <div class="pv-sec-hd">
@@ -817,8 +829,19 @@ function pv(){
           <div class="pv-sec-ttl">${esc(sp.title)||`Specification ${ord(i+1)}`}</div>
         </div>
         <div class="pv-sec-body">
-          ${sp.image ? `<img class="pv-spec-img" src="${sp.image}" alt="${esc(sp.title)}">` : ''}
-          ${sp.text  ? `<div class="pv-text">${esc(sp.text).replace(/\n/g,'<br>')}</div>` : ''}
+          ${hasBoth ? `
+            <div class="pv-spec-cols${reverse}">
+              <div class="pv-spec-img-wrap">
+                <img class="pv-spec-img" src="${sp.image}" alt="${esc(sp.title)}">
+              </div>
+              <div class="pv-spec-txt-wrap">
+                <div class="pv-text">${esc(sp.text).replace(/\n/g,'<br>')}</div>
+              </div>
+            </div>
+          ` : `
+            ${sp.image ? `<img class="pv-spec-img" src="${sp.image}" alt="${esc(sp.title)}">` : ''}
+            ${sp.text  ? `<div class="pv-text">${esc(sp.text).replace(/\n/g,'<br>')}</div>` : ''}
+          `}
         </div>
       </div>`);
   });
