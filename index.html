@@ -318,7 +318,7 @@ body{
 @page{margin:10mm}
 @media print{
   body{background:#fff!important;height:auto;overflow:visible;display:block}
-  #hd,#colF,.pv-bar,.no-print,#toast,#stlModal{display:none!important}
+  #hd,#colF,.pv-bar,.no-print,#toast,#stlModal,#importModal{display:none!important}
   #lay{display:block;overflow:visible}
   #colP{overflow:visible;height:auto}
   #pvArea{padding:0}
@@ -353,6 +353,7 @@ body{
       <span class="no-print" style="font-size:11px;color:var(--txm);background:var(--or-lt);color:var(--or-dk);padding:4px 10px;border-radius:20px;font-weight:600">✏️ Live Preview</span>
 <button class="btn btn-sec no-print" onclick="saveProject()" title="Save project as JSON">💾 Save</button>
       <label class="btn btn-sec no-print" style="cursor:pointer" title="Load project from JSON">📂 Load<input type="file" id="loadInput" accept=".json" style="display:none" onchange="loadProject(this)"></label>
+      <button class="btn btn-sec no-print" onclick="autoImport()" title="Auto-fill from folder structure">⚡ Auto Import</button>
       <button class="btn btn-or btn-lg no-print" onclick="exportPDF()">⬇️ Export PDF</button>
     </div>
   </div>
@@ -999,6 +1000,199 @@ function openSTLRenderer(buf, callback){
   initSTLGL(geo);
 }
 
+/* ==========================================
+   AUTO IMPORT FROM FOLDER
+   ==========================================*/
+function setIP(msg, pct){
+  document.getElementById('importMsg').textContent = msg;
+  document.getElementById('importBar').style.width = pct+'%';
+  document.getElementById('importSub').textContent = pct+'%';
+}
+function openImportModal(){ document.getElementById('importModal').style.display='flex'; setIP('Aguardando seleção da pasta...',0); }
+function closeImportModal(){ document.getElementById('importModal').style.display='none'; }
+
+function stripFolderPrefix(n){ return n.replace(/^\d+[\.\s]+/,'').trim().toLowerCase(); }
+
+function parseSTLFilename(filename){
+  let name = filename.replace(/\.stl$/i,'').trim();
+  let qty = '1';
+  let m = name.match(/\s*[-–]?\s*QTD\s*(\d+)\s*$/i);
+  if(m){ qty=String(parseInt(m[1])); name=name.slice(0,m.index).trim(); return {name,qty}; }
+  m = name.match(/\s+[xX]\s*(\d+)\s*$/);
+  if(m){ qty=String(parseInt(m[1])); name=name.slice(0,m.index).trim(); return {name,qty}; }
+  return {name, qty:'1'};
+}
+
+async function aiReadDataURL(fh){
+  const file = await fh.getFile();
+  return new Promise(res=>{ const r=new FileReader(); r.onload=e=>res(e.target.result); r.readAsDataURL(file); });
+}
+async function aiReadText(fh){ const f=await fh.getFile(); return await f.text(); }
+async function aiReadBuffer(fh){ const f=await fh.getFile(); return await f.arrayBuffer(); }
+
+function renderSTLOffscreen(buf, isCover){
+  return new Promise(resolve=>{
+    const canvas=document.createElement('canvas');
+    canvas.width = isCover ? 800 : 400;
+    canvas.height = isCover ? 400 : 400;
+    const gl=canvas.getContext('webgl',{preserveDrawingBuffer:true})||canvas.getContext('experimental-webgl',{preserveDrawingBuffer:true});
+    if(!gl){ resolve(null); return; }
+    const geo=parseSTL(buf);
+    if(!geo){ resolve(null); return; }
+    const gray = isCover ? '0.68,0.68,0.72' : '0.88,0.88,0.91';
+    const vs=`attribute vec3 aP,aN;uniform mat4 uMVP;uniform mat3 uNM;varying vec3 vN;void main(){gl_Position=uMVP*vec4(aP,1.0);vN=normalize(uNM*aN);}`;
+    const fs=`precision mediump float;varying vec3 vN;void main(){vec3 l1=normalize(vec3(0.8,1.5,1.2)),l2=normalize(vec3(-0.6,0.4,-0.8));float d1=max(dot(vN,l1),0.0),d2=max(dot(vN,l2),0.0)*0.25;float sp=pow(max(dot(reflect(-l1,vN),vec3(0,0,1)),0.0),40.0)*0.35;float b=0.28+0.55*d1+0.12*d2+sp;gl_FragColor=vec4(vec3(${gray})*b+vec3(0.08),1.0);}`;
+    const mkSh=(t,s)=>{const sh=gl.createShader(t);gl.shaderSource(sh,s);gl.compileShader(sh);return sh;};
+    const prog=gl.createProgram();
+    gl.attachShader(prog,mkSh(gl.VERTEX_SHADER,vs));
+    gl.attachShader(prog,mkSh(gl.FRAGMENT_SHADER,fs));
+    gl.linkProgram(prog); gl.useProgram(prog);
+    const bindBuf=(attr,data)=>{const b2=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b2);gl.bufferData(gl.ARRAY_BUFFER,data,gl.STATIC_DRAW);const loc=gl.getAttribLocation(prog,attr);gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,3,gl.FLOAT,false,0,0);};
+    bindBuf('aP',geo.verts); bindBuf('aN',geo.norms);
+    const v=geo.verts;
+    let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity,z0=Infinity,z1=-Infinity;
+    for(let i=0;i<v.length;i+=3){x0=Math.min(x0,v[i]);x1=Math.max(x1,v[i]);y0=Math.min(y0,v[i+1]);y1=Math.max(y1,v[i+1]);z0=Math.min(z0,v[i+2]);z1=Math.max(z1,v[i+2]);}
+    const cx=(x0+x1)/2,cy=(y0+y1)/2,cz=(z0+z1)/2;
+    const sc=1.0/Math.max(x1-x0,y1-y0,z1-z0)*2;
+    const uMVP=gl.getUniformLocation(prog,'uMVP'),uNM=gl.getUniformLocation(prog,'uNM');
+    const W=canvas.width,H=canvas.height,asp=W/H;
+    gl.clearColor(1,1,1,1); gl.enable(gl.DEPTH_TEST); gl.viewport(0,0,W,H);
+    const fov=Math.PI/4,near=0.1,far=100,f=1/Math.tan(fov/2);
+    const proj=new Float32Array([f/asp,0,0,0,0,f,0,0,0,0,(far+near)/(near-far),-1,0,0,2*far*near/(near-far),0]);
+    const angle=Math.PI/4, rx=0.38, cr=Math.cos(rx),sr=Math.sin(rx), zoom=2.8;
+    const cs=Math.cos(angle),sn=Math.sin(angle);
+    const view=new Float32Array([1,0,0,0,0,cr,sr,0,0,-sr,cr,0,0,0,-zoom,1]);
+    const model=new Float32Array([cs*sc,0,-sn*sc,0,0,sc,0,0,sn*sc,0,cs*sc,0,(-cx*cs-cz*sn)*sc,-cy*sc,(cx*sn-cz*cs)*sc,1]);
+    const mm=(a,b)=>{const r=new Float32Array(16);for(let i=0;i<4;i++)for(let j=0;j<4;j++){let s=0;for(let k=0;k<4;k++)s+=a[i+k*4]*b[k+j*4];r[i+j*4]=s;}return r;};
+    const mv=mm(view,model);
+    gl.uniformMatrix4fv(uMVP,false,mm(proj,mv));
+    gl.uniformMatrix3fv(uNM,false,new Float32Array([mv[0],mv[1],mv[2],mv[4],mv[5],mv[6],mv[8],mv[9],mv[10]]));
+    gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLES,0,geo.count);
+    const dataURL=canvas.toDataURL('image/png');
+    try{ gl.getExtension('WEBGL_lose_context').loseContext(); }catch(e){}
+    resolve(dataURL);
+  });
+}
+
+async function aiProcessCover(dh){
+  for await(const [n,h] of dh.entries()){
+    if(h.kind==='file' && /\.(jpg|jpeg|png|webp)$/i.test(n)){
+      S.cover = await aiReadDataURL(h); return;
+    }
+  }
+}
+
+async function aiProcessDesc(dh){
+  for await(const [n,h] of dh.entries()){
+    if(h.kind==='file' && /\.(txt|md)$/i.test(n)){
+      S.desc = await aiReadText(h); return;
+    }
+  }
+}
+
+async function aiProcessSpecs(dh, onProg){
+  const folders=[];
+  for await(const [n,h] of dh.entries()){ if(h.kind==='directory') folders.push({n,h}); }
+  folders.sort((a,b)=>a.n.localeCompare(b.n));
+  for(const {n,h} of folders.slice(0,8)){
+    const sp={id:uid(),title:n,image:null,text:''};
+    for await(const [fn,fh] of h.entries()){
+      if(fh.kind!=='file') continue;
+      if(/\.(jpg|jpeg|png|webp)$/i.test(fn)){ sp.image=await aiReadDataURL(fh); }
+      else if(/\.(txt|md)$/i.test(fn)){
+        const c=await aiReadText(fh);
+        const lines=c.trim().split('\n').filter(l=>l.trim());
+        if(lines.length>1 && lines[0].length<80){
+          sp.title=lines[0].replace(/^#+\s*/,'').trim();
+          sp.text=lines.slice(1).join('\n').trim();
+        } else { sp.text=c.trim(); }
+      }
+    }
+    S.specs.push(sp);
+    if(onProg) onProg(n);
+  }
+}
+
+async function aiProcessKits(dh, onProg){
+  const folders=[];
+  for await(const [n,h] of dh.entries()){ if(h.kind==='directory') folders.push({n,h}); }
+  folders.sort((a,b)=>a.n.localeCompare(b.n));
+  for(const {n,h} of folders.slice(0,8)){
+    const kit={id:uid(),title:n,coverImg:null,pieces:[]};
+    const stls=[];
+    for await(const [fn,fh] of h.entries()){ if(fh.kind==='file' && /\.stl$/i.test(fn)) stls.push({fn,fh}); }
+    for(const {fn,fh} of stls){
+      const isCov=/^cover\.stl$/i.test(fn);
+      if(onProg) onProg(fn);
+      const buf=await aiReadBuffer(fh);
+      const img=await renderSTLOffscreen(buf,isCov);
+      if(isCov){ kit.coverImg=img; }
+      else{ const {name:pn,qty}=parseSTLFilename(fn); kit.pieces.push({id:uid(),image:img,name:pn,qty}); }
+    }
+    S.kits.push(kit);
+  }
+}
+
+async function autoImport(){
+  if(!window.showDirectoryPicker){ toast('Auto Import requer Chrome ou Edge','er'); return; }
+  let dh;
+  try{ dh=await showDirectoryPicker(); } catch(e){ return; }
+  openImportModal();
+  try{
+    S.title=''; S.cover=null; S.desc=''; S.specs=[]; S.kits=[]; _id=1;
+    setIP(`📁 Lendo "${dh.name}"...`,5);
+    S.title=dh.name;
+
+    // Count STLs for progress calc
+    let totalStl=0, doneStl=0;
+    for await(const [n,h] of dh.entries()){
+      if(h.kind==='directory' && stripFolderPrefix(n).includes('kit')){
+        for await(const [kn,kh] of h.entries()){
+          if(kh.kind==='directory'){
+            for await(const [fn] of kh.entries()){ if(/\.stl$/i.test(fn)) totalStl++; }
+          }
+        }
+      }
+    }
+
+    for await(const [n,h] of dh.entries()){
+      const norm=stripFolderPrefix(n);
+      if(h.kind!=='directory') continue;
+      if(norm.includes('cover')){
+        setIP('🖼️ Carregando capa...',15);
+        await aiProcessCover(h);
+      } else if(norm.includes('what')||norm.includes('product')){
+        setIP('📝 Lendo descrição do produto...',28);
+        await aiProcessDesc(h);
+      } else if(norm.includes('spec')){
+        setIP('📐 Processando especificações...',42);
+        await aiProcessSpecs(h, sn=>setIP(`📐 Spec: ${sn}`,42));
+      } else if(norm.includes('kit')){
+        await aiProcessKits(h, fn=>{
+          doneStl++;
+          const pct=Math.round(60+((doneStl/Math.max(totalStl,1))*35));
+          setIP(`🧊 Renderizando ${fn}...`,pct);
+        });
+      }
+    }
+
+    setIP('✅ Finalizando...',98);
+    document.getElementById('fTitle').value=S.title;
+    document.getElementById('fDesc').value=S.desc;
+    if(S.cover){
+      document.getElementById('covInner').innerHTML=`<img src="${S.cover}">`;
+      document.getElementById('covRm').style.display='block';
+    }
+    renderSpecs(); renderKits(); pv();
+    setTimeout(()=>{ closeImportModal(); toast(`✅ Importado: ${S.specs.length} specs · ${S.kits.length} kits`,'ok'); },600);
+  } catch(err){
+    closeImportModal();
+    toast('Erro na importação: '+err.message,'er');
+    console.error(err);
+  }
+}
+
 function closeSTLModal(){
   document.getElementById('stlModal').style.display = 'none';
   if(_stlAnimId){ cancelAnimationFrame(_stlAnimId); _stlAnimId = null; }
@@ -1132,6 +1326,21 @@ function initSTLGL(geo){
   frame();
 }
 </script>
+
+<!-- Auto Import Progress Modal -->
+<div id="importModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9997;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:16px;padding:32px;width:440px;max-width:92vw;box-shadow:0 24px 64px rgba(0,0,0,.3)">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+      <span style="font-size:22px">⚡</span>
+      <span style="font-weight:800;font-size:15px;color:#1A1A1A">Auto Import</span>
+    </div>
+    <div id="importMsg" style="font-size:12px;color:#666;margin-bottom:18px;min-height:18px">Aguardando seleção da pasta...</div>
+    <div style="background:#f0f0f0;border-radius:20px;overflow:hidden;height:8px;margin-bottom:10px">
+      <div id="importBar" style="background:var(--or);height:100%;width:0%;transition:width .4s ease;border-radius:20px"></div>
+    </div>
+    <div id="importSub" style="font-size:11px;color:#aaa;text-align:right">0%</div>
+  </div>
+</div>
 
 <!-- STL Renderer Modal -->
 <div id="stlModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center">
