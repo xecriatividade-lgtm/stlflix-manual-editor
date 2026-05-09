@@ -1132,38 +1132,38 @@ async function generateAICover(){
 
   document.getElementById('aiBtnGen').disabled=true;
   try{
-    // Render high-res (800×800) for GPT-4o — much better quality than small preview
+    // Render high-res (800×800) as structural reference
     setAISt('🧊 Renderizando modelo em alta resolução...');
     const stlDataURL = await renderSTLOffscreen(_aiStlBuf, true);
 
-    setAISt('🔍 Analisando modelo 3D com GPT-4o...');
-    const vRes=await fetch('https://api.openai.com/v1/chat/completions',{
-      method:'POST',
-      headers:{'Authorization':`Bearer ${key}`,'Content-Type':'application/json'},
-      body:JSON.stringify({
-        model:'gpt-4o',
-        messages:[
-          {role:'system', content:'You are a professional product photographer and creative director. Your job is to analyze 3D product renders and create detailed DALL-E 3 prompts that produce stunning, photorealistic product cover images that faithfully represent the product\'s shape and form.'},
-          {role:'user',content:[
-          {type:'image_url',image_url:{url:stlDataURL, detail:'high'}},
-          {type:'text',text:`This is a high-resolution isometric render of a 3D printed plastic product. Study the exact shape, geometry, and form carefully.\n\nThe user wants a professional product cover image with this style/ambiance: "${prompt||'modern, clean, studio lighting, white background, premium product photography'}"\n\nCreate a DALL-E 3 prompt that:\n1. Accurately describes the product's shape and geometry as seen in the render\n2. Specifies photorealistic plastic material (gray/white)\n3. Incorporates the requested style/ambiance\n4. Includes professional lighting, composition, and camera angle details\n5. Results in a 16:9 marketing cover image\n\nReturn ONLY the DALL-E 3 prompt in English, nothing else.`}
-        ]}],
-        max_tokens:800
-      })
-    });
-    const vData=await vRes.json();
-    if(vData.error) throw new Error(vData.error.message);
-    const dallePrompt=vData.choices[0].message.content;
+    // Convert data URL to Blob for multipart upload
+    const b64 = stlDataURL.split(',')[1];
+    const binary = atob(b64);
+    const byteArr = new Uint8Array(binary.length);
+    for(let i=0;i<binary.length;i++) byteArr[i]=binary.charCodeAt(i);
+    const imgBlob = new Blob([byteArr], {type:'image/png'});
 
-    setAISt('🎨 Gerando imagem com DALL-E 3...');
-    const iRes=await fetch('https://api.openai.com/v1/images/generations',{
-      method:'POST',
-      headers:{'Authorization':`Bearer ${key}`,'Content-Type':'application/json'},
-      body:JSON.stringify({model:'dall-e-3',prompt:dallePrompt,n:1,size:'1792x1024',quality:'hd',response_format:'b64_json'})
+    // Use gpt-image-1 edits — takes the STL render as visual reference
+    // and transforms it into a photorealistic product photo
+    setAISt('🎨 Gerando capa fotorrealista com gpt-image-1...');
+    const stylePrompt = prompt || 'professional studio product photography, clean background, dramatic lighting';
+    const editPrompt = `Transform this 3D CAD render into a stunning photorealistic product marketing cover photo. Keep the exact same product shape, geometry and proportions from the render. Style: ${stylePrompt}. Make it look like a professional product photograph with realistic plastic material, proper lighting and shadows. 16:9 composition suitable for a product manual cover.`;
+
+    const fd = new FormData();
+    fd.append('model', 'gpt-image-1');
+    fd.append('image[]', imgBlob, 'product.png');
+    fd.append('prompt', editPrompt);
+    fd.append('n', '1');
+    fd.append('size', '1536x1024');
+
+    const iRes = await fetch('https://api.openai.com/v1/images/edits', {
+      method: 'POST',
+      headers: {'Authorization': `Bearer ${key}`},
+      body: fd
     });
-    const iData=await iRes.json();
+    const iData = await iRes.json();
     if(iData.error) throw new Error(iData.error.message);
-    const dataURL='data:image/png;base64,'+iData.data[0].b64_json;
+    const dataURL = 'data:image/png;base64,' + iData.data[0].b64_json;
 
     S.cover=dataURL;
     document.getElementById('covInner').innerHTML=`<img src="${dataURL}">`;
