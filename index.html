@@ -1057,14 +1057,14 @@ function switchCoverTab(tab){
 /* ==========================================
    AI COVER — STL PREVIEW
    ==========================================*/
-let _aiGeo=null, _aiAnimId=null, _aiAngle=0;
+let _aiGeo=null, _aiAnimId=null, _aiAngle=0, _aiStlBuf=null;
 
 document.getElementById('aiStlFile').addEventListener('change', function(e){
   const f=e.target.files[0]; if(!f) return;
   const r=new FileReader();
   r.onload=ev=>{
-    const buf=ev.target.result;
-    _aiGeo=parseSTL(buf);
+    _aiStlBuf=ev.target.result; // store buffer for high-res render
+    _aiGeo=parseSTL(_aiStlBuf);
     if(!_aiGeo){ toast('Erro ao ler STL','er'); return; }
     const canvas=document.getElementById('aiStlCanvas');
     canvas.style.display='block';
@@ -1124,27 +1124,31 @@ function setAISt(msg){ document.getElementById('aiStatus').textContent=msg; }
 async function generateAICover(){
   const key=(document.getElementById('aiKey').value||localStorage.getItem('oai_key')||'').trim();
   if(!key){ toast('Insira a chave OpenAI','er'); return; }
-  const canvas=document.getElementById('aiStlCanvas');
-  if(canvas.style.display==='none'||!_aiGeo){ toast('Carregue um arquivo .STL primeiro','er'); return; }
+  if(!_aiGeo||!_aiStlBuf){ toast('Carregue um arquivo .STL primeiro','er'); return; }
   const prompt=(document.getElementById('aiPrompt').value||'').trim();
 
-  // Freeze rotation and capture
+  // Freeze animation
   if(_aiAnimId){ cancelAnimationFrame(_aiAnimId); _aiAnimId=null; }
-  const stlDataURL=canvas.toDataURL('image/png');
 
   document.getElementById('aiBtnGen').disabled=true;
   try{
+    // Render high-res (800×800) for GPT-4o — much better quality than small preview
+    setAISt('🧊 Renderizando modelo em alta resolução...');
+    const stlDataURL = await renderSTLOffscreen(_aiStlBuf, true);
+
     setAISt('🔍 Analisando modelo 3D com GPT-4o...');
     const vRes=await fetch('https://api.openai.com/v1/chat/completions',{
       method:'POST',
       headers:{'Authorization':`Bearer ${key}`,'Content-Type':'application/json'},
       body:JSON.stringify({
         model:'gpt-4o',
-        messages:[{role:'user',content:[
-          {type:'image_url',image_url:{url:stlDataURL}},
-          {type:'text',text:`You are a product visualization expert. This is a 3D render of a plastic product. The user wants a professional marketing cover image with this style/context: "${prompt||'modern, clean, white background, professional studio lighting'}". Write a detailed DALL-E 3 prompt in English for a stunning product cover photo. Make it photorealistic, focus on the product shape, plastic material, composition and lighting. Return ONLY the DALL-E 3 prompt, nothing else.`}
+        messages:[
+          {role:'system', content:'You are a professional product photographer and creative director. Your job is to analyze 3D product renders and create detailed DALL-E 3 prompts that produce stunning, photorealistic product cover images that faithfully represent the product\'s shape and form.'},
+          {role:'user',content:[
+          {type:'image_url',image_url:{url:stlDataURL, detail:'high'}},
+          {type:'text',text:`This is a high-resolution isometric render of a 3D printed plastic product. Study the exact shape, geometry, and form carefully.\n\nThe user wants a professional product cover image with this style/ambiance: "${prompt||'modern, clean, studio lighting, white background, premium product photography'}"\n\nCreate a DALL-E 3 prompt that:\n1. Accurately describes the product's shape and geometry as seen in the render\n2. Specifies photorealistic plastic material (gray/white)\n3. Incorporates the requested style/ambiance\n4. Includes professional lighting, composition, and camera angle details\n5. Results in a 16:9 marketing cover image\n\nReturn ONLY the DALL-E 3 prompt in English, nothing else.`}
         ]}],
-        max_tokens:600
+        max_tokens:800
       })
     });
     const vData=await vRes.json();
@@ -1155,7 +1159,7 @@ async function generateAICover(){
     const iRes=await fetch('https://api.openai.com/v1/images/generations',{
       method:'POST',
       headers:{'Authorization':`Bearer ${key}`,'Content-Type':'application/json'},
-      body:JSON.stringify({model:'dall-e-3',prompt:dallePrompt,n:1,size:'1792x1024',quality:'standard',response_format:'b64_json'})
+      body:JSON.stringify({model:'dall-e-3',prompt:dallePrompt,n:1,size:'1792x1024',quality:'hd',response_format:'b64_json'})
     });
     const iData=await iRes.json();
     if(iData.error) throw new Error(iData.error.message);
