@@ -428,17 +428,20 @@ body{
             <input type="password" id="aiKey" class="inp inp-sm" placeholder="sk-proj-..." oninput="localStorage.setItem('oai_key',this.value)">
           </div>
           <div class="ff">
-            <label>Arquivo .STL do produto</label>
-            <div class="upz upz-std" id="aiStlUpz" onclick="document.getElementById('aiStlFile').click()">
-              <div id="aiStlPh" class="upz-ph">
-                <span class="upz-ph-ico">🧊</span>
-                <span>Clique para carregar .STL</span>
-                <span class="upz-ph-sub">.stl — o modelo será renderizado em 3D</span>
+            <label>Foto do produto</label>
+            <span class="sub">JPEG, PNG ou WEBP — foto real ou render do produto</span>
+            <div class="upz upz-cover" id="aiImgUpz" onclick="document.getElementById('aiImgFile').click()">
+              <div id="aiImgInner" style="width:100%;display:flex;align-items:center;justify-content:center;min-height:76px">
+                <div class="upz-ph">
+                  <span class="upz-ph-ico">📸</span>
+                  <span>Clique para carregar imagem</span>
+                  <span class="upz-ph-sub">Foto ou render do produto</span>
+                </div>
               </div>
             </div>
-            <input type="file" id="aiStlFile" accept=".stl" style="display:none">
+            <input type="file" id="aiImgFile" accept="image/jpeg,image/png,image/webp" style="display:none">
+            <button id="aiImgRm" class="btn-rm" style="display:none;width:fit-content;margin-top:4px" onclick="rmAIImg()">✕ Remover imagem</button>
           </div>
-          <canvas id="aiStlCanvas" width="380" height="220" style="display:none;width:100%;border-radius:8px;border:1px solid #eee;background:#fff"></canvas>
           <div class="ff">
             <label>Prompt de ambientação</label>
             <span class="sub">Descreva o estilo, ambiente ou contexto desejado</span>
@@ -1054,104 +1057,45 @@ function switchCoverTab(tab){
   document.getElementById('tabAI').classList.toggle('active', tab==='ai');
 }
 
-/* ==========================================
-   AI COVER — STL PREVIEW
+/*/* ==========================================
+   AI COVER — IMAGE UPLOAD + GENERATION
    ==========================================*/
-let _aiGeo=null, _aiAnimId=null, _aiAngle=0, _aiStlBuf=null;
+let _aiImgBlob = null;
 
-document.getElementById('aiStlFile').addEventListener('change', function(e){
-  const f=e.target.files[0]; if(!f) return;
-  const r=new FileReader();
-  r.onload=ev=>{
-    _aiStlBuf=ev.target.result; // store buffer for high-res render
-    _aiGeo=parseSTL(_aiStlBuf);
-    if(!_aiGeo){ toast('Erro ao ler STL','er'); return; }
-    const canvas=document.getElementById('aiStlCanvas');
-    canvas.style.display='block';
-    document.getElementById('aiStlPh').innerHTML=`<span class="upz-ph-ico">✅</span><span style="font-size:11px">${f.name}</span>`;
-    if(_aiAnimId){ cancelAnimationFrame(_aiAnimId); _aiAnimId=null; }
-    _aiAngle=0;
-    initAIStlGL(_aiGeo);
+document.getElementById('aiImgFile').addEventListener('change', function(e){
+  const f = e.target.files[0]; if(!f) return;
+  _aiImgBlob = f;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    document.getElementById('aiImgInner').innerHTML = `<img src="${ev.target.result}" style="max-width:100%;max-height:180px;object-fit:contain;border-radius:6px;display:block;margin:auto">`;
+    document.getElementById('aiImgRm').style.display = 'block';
   };
-  r.readAsArrayBuffer(f);
-  this.value='';
+  reader.readAsDataURL(f);
+  this.value = '';
 });
 
-function initAIStlGL(geo){
-  const canvas=document.getElementById('aiStlCanvas');
-  const gl=canvas.getContext('webgl',{preserveDrawingBuffer:true})||canvas.getContext('experimental-webgl',{preserveDrawingBuffer:true});
-  if(!gl) return;
-  const vs=`attribute vec3 aP,aN;uniform mat4 uMVP;uniform mat3 uNM;varying vec3 vN;void main(){gl_Position=uMVP*vec4(aP,1.0);vN=normalize(uNM*aN);}`;
-  const fs=`precision mediump float;varying vec3 vN;void main(){vec3 l1=normalize(vec3(0.8,1.5,1.2)),l2=normalize(vec3(-0.6,0.4,-0.8));float d1=max(dot(vN,l1),0.0),d2=max(dot(vN,l2),0.0)*0.25;float sp=pow(max(dot(reflect(-l1,vN),vec3(0,0,1)),0.0),40.0)*0.35;float b=0.28+0.55*d1+0.12*d2+sp;gl_FragColor=vec4(vec3(0.75,0.75,0.78)*b+vec3(0.08),1.0);}`;
-  const mkSh=(t,s)=>{const sh=gl.createShader(t);gl.shaderSource(sh,s);gl.compileShader(sh);return sh;};
-  const prog=gl.createProgram();
-  gl.attachShader(prog,mkSh(gl.VERTEX_SHADER,vs));
-  gl.attachShader(prog,mkSh(gl.FRAGMENT_SHADER,fs));
-  gl.linkProgram(prog); gl.useProgram(prog);
-  const bnd=(a,d)=>{const b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);gl.bufferData(gl.ARRAY_BUFFER,d,gl.STATIC_DRAW);const l=gl.getAttribLocation(prog,a);gl.enableVertexAttribArray(l);gl.vertexAttribPointer(l,3,gl.FLOAT,false,0,0);};
-  bnd('aP',geo.verts); bnd('aN',geo.norms);
-  const v=geo.verts;
-  let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity,z0=Infinity,z1=-Infinity;
-  for(let i=0;i<v.length;i+=3){x0=Math.min(x0,v[i]);x1=Math.max(x1,v[i]);y0=Math.min(y0,v[i+1]);y1=Math.max(y1,v[i+1]);z0=Math.min(z0,v[i+2]);z1=Math.max(z1,v[i+2]);}
-  const cx=(x0+x1)/2,cy=(y0+y1)/2,cz=(z0+z1)/2,sc=1.0/Math.max(x1-x0,y1-y0,z1-z0)*2;
-  const uMVP=gl.getUniformLocation(prog,'uMVP'),uNM=gl.getUniformLocation(prog,'uNM');
-  const W=canvas.width,H=canvas.height,asp=W/H;
-  gl.clearColor(1,1,1,1); gl.enable(gl.DEPTH_TEST); gl.viewport(0,0,W,H);
-  const fov=Math.PI/4,near=0.1,far=100,ff=1/Math.tan(fov/2);
-  const proj=new Float32Array([ff/asp,0,0,0,0,ff,0,0,0,0,(far+near)/(near-far),-1,0,0,2*far*near/(near-far),0]);
-  const rx2=0.38,cr=Math.cos(rx2),sr=Math.sin(rx2);
-  const mm=(a,b)=>{const r=new Float32Array(16);for(let i=0;i<4;i++)for(let j=0;j<4;j++){let s=0;for(let k=0;k<4;k++)s+=a[i+k*4]*b[k+j*4];r[i+j*4]=s;}return r;};
-  function fr(){
-    _aiAngle+=0.012;
-    const cs=Math.cos(_aiAngle),sn=Math.sin(_aiAngle);
-    const view=new Float32Array([1,0,0,0,0,cr,sr,0,0,-sr,cr,0,0,0,-2.8,1]);
-    const model=new Float32Array([cs*sc,0,-sn*sc,0,0,sc,0,0,sn*sc,0,cs*sc,0,(-cx*cs-cz*sn)*sc,-cy*sc,(cx*sn-cz*cs)*sc,1]);
-    const mv=mm(view,model);
-    gl.uniformMatrix4fv(uMVP,false,mm(proj,mv));
-    gl.uniformMatrix3fv(uNM,false,new Float32Array([mv[0],mv[1],mv[2],mv[4],mv[5],mv[6],mv[8],mv[9],mv[10]]));
-    gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
-    gl.drawArrays(gl.TRIANGLES,0,geo.count);
-    _aiAnimId=requestAnimationFrame(fr);
-  }
-  fr();
+function rmAIImg(){
+  _aiImgBlob = null;
+  document.getElementById('aiImgInner').innerHTML = '<div class="upz-ph"><span class="upz-ph-ico">📸</span><span>Clique para carregar imagem</span><span class="upz-ph-sub">Foto ou render do produto</span></div>';
+  document.getElementById('aiImgRm').style.display = 'none';
 }
 
-/* ==========================================
-   AI COVER — GENERATION
-   ==========================================*/
-function setAISt(msg){ document.getElementById('aiStatus').textContent=msg; }
+function setAISt(msg){ document.getElementById('aiStatus').textContent = msg; }
 
 async function generateAICover(){
-  const key=(document.getElementById('aiKey').value||localStorage.getItem('oai_key')||'').trim();
+  const key = (document.getElementById('aiKey').value || localStorage.getItem('oai_key') || '').trim();
   if(!key){ toast('Insira a chave OpenAI','er'); return; }
-  if(!_aiGeo||!_aiStlBuf){ toast('Carregue um arquivo .STL primeiro','er'); return; }
-  const prompt=(document.getElementById('aiPrompt').value||'').trim();
+  if(!_aiImgBlob){ toast('Carregue uma foto do produto primeiro','er'); return; }
+  const prompt = (document.getElementById('aiPrompt').value || '').trim();
 
-  // Freeze animation
-  if(_aiAnimId){ cancelAnimationFrame(_aiAnimId); _aiAnimId=null; }
-
-  document.getElementById('aiBtnGen').disabled=true;
+  document.getElementById('aiBtnGen').disabled = true;
   try{
-    // Render high-res (800×800) as structural reference
-    setAISt('🧊 Renderizando modelo em alta resolução...');
-    const stlDataURL = await renderSTLOffscreen(_aiStlBuf, true);
-
-    // Convert data URL to Blob for multipart upload
-    const b64 = stlDataURL.split(',')[1];
-    const binary = atob(b64);
-    const byteArr = new Uint8Array(binary.length);
-    for(let i=0;i<binary.length;i++) byteArr[i]=binary.charCodeAt(i);
-    const imgBlob = new Blob([byteArr], {type:'image/png'});
-
-    // Use gpt-image-1 edits — takes the STL render as visual reference
-    // and transforms it into a photorealistic product photo
-    setAISt('🎨 Gerando capa fotorrealista com gpt-image-1...');
-    const stylePrompt = prompt || 'professional studio product photography, clean background, dramatic lighting';
-    const editPrompt = `Transform this 3D CAD render into a stunning photorealistic product marketing cover photo. Keep the exact same product shape, geometry and proportions from the render. Style: ${stylePrompt}. Make it look like a professional product photograph with realistic plastic material, proper lighting and shadows. 16:9 composition suitable for a product manual cover.`;
+    setAISt('🎨 Gerando capa com gpt-image-1...');
+    const editPrompt = `This is a product photo. Create a stunning professional marketing cover image based on this product. Keep the product exactly as it appears — same shape, colors and details. Style: ${prompt || 'professional studio lighting, clean background, premium product photography'}. 16:9 composition suitable for a product manual cover.`;
 
     const fd = new FormData();
     fd.append('model', 'gpt-image-1');
-    fd.append('image[]', imgBlob, 'product.png');
+    fd.append('image[]', _aiImgBlob, _aiImgBlob.name);
     fd.append('prompt', editPrompt);
     fd.append('n', '1');
     fd.append('size', '1536x1024');
@@ -1165,23 +1109,22 @@ async function generateAICover(){
     if(iData.error) throw new Error(iData.error.message);
     const dataURL = 'data:image/png;base64,' + iData.data[0].b64_json;
 
-    S.cover=dataURL;
-    document.getElementById('covInner').innerHTML=`<img src="${dataURL}">`;
-    document.getElementById('covRm').style.display='block';
+    S.cover = dataURL;
+    document.getElementById('covInner').innerHTML = `<img src="${dataURL}">`;
+    document.getElementById('covRm').style.display = 'block';
     pv();
     setAISt('✅ Capa gerada com sucesso!');
     switchCoverTab('upload');
     toast('✅ Capa gerada e aplicada!','ok');
   } catch(err){
-    setAISt('❌ '+err.message);
-    toast('Erro: '+err.message,'er');
-    if(_aiGeo) initAIStlGL(_aiGeo); // resume rotation
+    setAISt('❌ ' + err.message);
+    toast('Erro: ' + err.message,'er');
   }
-  document.getElementById('aiBtnGen').disabled=false;
+  document.getElementById('aiBtnGen').disabled = false;
 }
 
 // Init: restore saved API key
-(function(){ const k=localStorage.getItem('oai_key'); if(k) document.getElementById('aiKey').value=k; })();
+(function(){ const k = localStorage.getItem('oai_key'); if(k) document.getElementById('aiKey').value = k; })();(function(){ const k=localStorage.getItem('oai_key'); if(k) document.getElementById('aiKey').value=k; })();
 
 /* ==========================================
    AUTO IMPORT FROM FOLDER
