@@ -155,6 +155,14 @@ body{
 .ta{resize:vertical;min-height:76px}
 .inp-sm{padding:6px 9px;font-size:12px;border-radius:6px}
 
+/* ===== COVER TABS ===== */
+.cov-tabs{display:flex;gap:2px;background:var(--bg2);border-radius:var(--r);padding:3px;margin-bottom:12px}
+.cov-tab{flex:1;padding:7px 4px;text-align:center;font-size:12px;font-weight:600;border-radius:6px;cursor:pointer;border:none;background:none;color:var(--txm);transition:all .15s;font-family:'Inter',sans-serif}
+.cov-tab.active{background:#fff;color:var(--tx);box-shadow:var(--sh)}
+.cov-tab-panel{display:none}
+.cov-tab-panel.active{display:flex;flex-direction:column;gap:10px}
+.ai-status{font-size:11px;font-weight:600;min-height:16px;color:var(--or)}
+
 /* ===== UPLOAD ZONE ===== */
 .upz{
   border:2px dashed var(--bd);border-radius:var(--r);
@@ -388,20 +396,56 @@ body{
         <div class="fcard-ttl">Cover</div>
       </div>
       <div class="fcard-body">
-        <div class="ff">
-          <label>Cover image</label>
-          <span class="sub">Original proportions preserved in preview (max height 800 px)</span>
-          <div class="upz upz-cover" id="covUpz" onclick="document.getElementById('covFile').click()">
-            <div id="covInner" style="width:100%;display:flex;align-items:center;justify-content:center;min-height:76px">
-              <div class="upz-ph">
-                <span class="upz-ph-ico">🖼️</span>
-                <span>Click to add cover image</span>
-                <span class="upz-ph-sub">Any aspect ratio — displayed without cropping</span>
+        <!-- Tabs -->
+        <div class="cov-tabs">
+          <button class="cov-tab active" id="tabUpload" onclick="switchCoverTab('upload')">📁 Upload</button>
+          <button class="cov-tab" id="tabAI" onclick="switchCoverTab('ai')">🤖 Gerar com IA</button>
+        </div>
+
+        <!-- Tab 1: Upload -->
+        <div class="cov-tab-panel active" id="panelUpload">
+          <div class="ff">
+            <label>Cover image</label>
+            <span class="sub">Original proportions preserved in preview (max height 800 px)</span>
+            <div class="upz upz-cover" id="covUpz" onclick="document.getElementById('covFile').click()">
+              <div id="covInner" style="width:100%;display:flex;align-items:center;justify-content:center;min-height:76px">
+                <div class="upz-ph">
+                  <span class="upz-ph-ico">🖼️</span>
+                  <span>Click to add cover image</span>
+                  <span class="upz-ph-sub">Any aspect ratio — displayed without cropping</span>
+                </div>
               </div>
             </div>
+            <input type="file" id="covFile" accept="image/*" style="display:none">
+            <button id="covRm" class="btn-rm" style="display:none;width:fit-content;margin-top:4px" onclick="rmCover()">✕ Remove image</button>
           </div>
-          <input type="file" id="covFile" accept="image/*" style="display:none">
-          <button id="covRm" class="btn-rm" style="display:none;width:fit-content;margin-top:4px" onclick="rmCover()">✕ Remove image</button>
+        </div>
+
+        <!-- Tab 2: AI Generation -->
+        <div class="cov-tab-panel" id="panelAI">
+          <div class="ff">
+            <label>OpenAI API Key</label>
+            <input type="password" id="aiKey" class="inp inp-sm" placeholder="sk-proj-..." oninput="localStorage.setItem('oai_key',this.value)">
+          </div>
+          <div class="ff">
+            <label>Arquivo .STL do produto</label>
+            <div class="upz upz-std" id="aiStlUpz" onclick="document.getElementById('aiStlFile').click()">
+              <div id="aiStlPh" class="upz-ph">
+                <span class="upz-ph-ico">🧊</span>
+                <span>Clique para carregar .STL</span>
+                <span class="upz-ph-sub">.stl — o modelo será renderizado em 3D</span>
+              </div>
+            </div>
+            <input type="file" id="aiStlFile" accept=".stl" style="display:none">
+          </div>
+          <canvas id="aiStlCanvas" width="380" height="220" style="display:none;width:100%;border-radius:8px;border:1px solid #eee;background:#fff"></canvas>
+          <div class="ff">
+            <label>Prompt de ambientação</label>
+            <span class="sub">Descreva o estilo, ambiente ou contexto desejado</span>
+            <textarea id="aiPrompt" class="ta" rows="3" placeholder="Ex: fundo industrial escuro, iluminação lateral dramática, produto em destaque sobre superfície metálica..."></textarea>
+          </div>
+          <button class="btn btn-or" style="width:100%" onclick="generateAICover()" id="aiBtnGen">✨ Gerar Capa com IA</button>
+          <div id="aiStatus" class="ai-status"></div>
         </div>
       </div>
     </div>
@@ -999,6 +1043,141 @@ function openSTLRenderer(buf, callback){
   if(!geo){ toast('Could not parse STL','er'); closeSTLModal(); return; }
   initSTLGL(geo);
 }
+
+/* ==========================================
+   COVER TABS
+   ==========================================*/
+function switchCoverTab(tab){
+  document.getElementById('panelUpload').classList.toggle('active', tab==='upload');
+  document.getElementById('panelAI').classList.toggle('active', tab==='ai');
+  document.getElementById('tabUpload').classList.toggle('active', tab==='upload');
+  document.getElementById('tabAI').classList.toggle('active', tab==='ai');
+}
+
+/* ==========================================
+   AI COVER — STL PREVIEW
+   ==========================================*/
+let _aiGeo=null, _aiAnimId=null, _aiAngle=0;
+
+document.getElementById('aiStlFile').addEventListener('change', function(e){
+  const f=e.target.files[0]; if(!f) return;
+  const r=new FileReader();
+  r.onload=ev=>{
+    const buf=ev.target.result;
+    _aiGeo=parseSTL(buf);
+    if(!_aiGeo){ toast('Erro ao ler STL','er'); return; }
+    const canvas=document.getElementById('aiStlCanvas');
+    canvas.style.display='block';
+    document.getElementById('aiStlPh').innerHTML=`<span class="upz-ph-ico">✅</span><span style="font-size:11px">${f.name}</span>`;
+    if(_aiAnimId){ cancelAnimationFrame(_aiAnimId); _aiAnimId=null; }
+    _aiAngle=0;
+    initAIStlGL(_aiGeo);
+  };
+  r.readAsArrayBuffer(f);
+  this.value='';
+});
+
+function initAIStlGL(geo){
+  const canvas=document.getElementById('aiStlCanvas');
+  const gl=canvas.getContext('webgl',{preserveDrawingBuffer:true})||canvas.getContext('experimental-webgl',{preserveDrawingBuffer:true});
+  if(!gl) return;
+  const vs=`attribute vec3 aP,aN;uniform mat4 uMVP;uniform mat3 uNM;varying vec3 vN;void main(){gl_Position=uMVP*vec4(aP,1.0);vN=normalize(uNM*aN);}`;
+  const fs=`precision mediump float;varying vec3 vN;void main(){vec3 l1=normalize(vec3(0.8,1.5,1.2)),l2=normalize(vec3(-0.6,0.4,-0.8));float d1=max(dot(vN,l1),0.0),d2=max(dot(vN,l2),0.0)*0.25;float sp=pow(max(dot(reflect(-l1,vN),vec3(0,0,1)),0.0),40.0)*0.35;float b=0.28+0.55*d1+0.12*d2+sp;gl_FragColor=vec4(vec3(0.75,0.75,0.78)*b+vec3(0.08),1.0);}`;
+  const mkSh=(t,s)=>{const sh=gl.createShader(t);gl.shaderSource(sh,s);gl.compileShader(sh);return sh;};
+  const prog=gl.createProgram();
+  gl.attachShader(prog,mkSh(gl.VERTEX_SHADER,vs));
+  gl.attachShader(prog,mkSh(gl.FRAGMENT_SHADER,fs));
+  gl.linkProgram(prog); gl.useProgram(prog);
+  const bnd=(a,d)=>{const b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);gl.bufferData(gl.ARRAY_BUFFER,d,gl.STATIC_DRAW);const l=gl.getAttribLocation(prog,a);gl.enableVertexAttribArray(l);gl.vertexAttribPointer(l,3,gl.FLOAT,false,0,0);};
+  bnd('aP',geo.verts); bnd('aN',geo.norms);
+  const v=geo.verts;
+  let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity,z0=Infinity,z1=-Infinity;
+  for(let i=0;i<v.length;i+=3){x0=Math.min(x0,v[i]);x1=Math.max(x1,v[i]);y0=Math.min(y0,v[i+1]);y1=Math.max(y1,v[i+1]);z0=Math.min(z0,v[i+2]);z1=Math.max(z1,v[i+2]);}
+  const cx=(x0+x1)/2,cy=(y0+y1)/2,cz=(z0+z1)/2,sc=1.0/Math.max(x1-x0,y1-y0,z1-z0)*2;
+  const uMVP=gl.getUniformLocation(prog,'uMVP'),uNM=gl.getUniformLocation(prog,'uNM');
+  const W=canvas.width,H=canvas.height,asp=W/H;
+  gl.clearColor(1,1,1,1); gl.enable(gl.DEPTH_TEST); gl.viewport(0,0,W,H);
+  const fov=Math.PI/4,near=0.1,far=100,ff=1/Math.tan(fov/2);
+  const proj=new Float32Array([ff/asp,0,0,0,0,ff,0,0,0,0,(far+near)/(near-far),-1,0,0,2*far*near/(near-far),0]);
+  const rx2=0.38,cr=Math.cos(rx2),sr=Math.sin(rx2);
+  const mm=(a,b)=>{const r=new Float32Array(16);for(let i=0;i<4;i++)for(let j=0;j<4;j++){let s=0;for(let k=0;k<4;k++)s+=a[i+k*4]*b[k+j*4];r[i+j*4]=s;}return r;};
+  function fr(){
+    _aiAngle+=0.012;
+    const cs=Math.cos(_aiAngle),sn=Math.sin(_aiAngle);
+    const view=new Float32Array([1,0,0,0,0,cr,sr,0,0,-sr,cr,0,0,0,-2.8,1]);
+    const model=new Float32Array([cs*sc,0,-sn*sc,0,0,sc,0,0,sn*sc,0,cs*sc,0,(-cx*cs-cz*sn)*sc,-cy*sc,(cx*sn-cz*cs)*sc,1]);
+    const mv=mm(view,model);
+    gl.uniformMatrix4fv(uMVP,false,mm(proj,mv));
+    gl.uniformMatrix3fv(uNM,false,new Float32Array([mv[0],mv[1],mv[2],mv[4],mv[5],mv[6],mv[8],mv[9],mv[10]]));
+    gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLES,0,geo.count);
+    _aiAnimId=requestAnimationFrame(fr);
+  }
+  fr();
+}
+
+/* ==========================================
+   AI COVER — GENERATION
+   ==========================================*/
+function setAISt(msg){ document.getElementById('aiStatus').textContent=msg; }
+
+async function generateAICover(){
+  const key=(document.getElementById('aiKey').value||localStorage.getItem('oai_key')||'').trim();
+  if(!key){ toast('Insira a chave OpenAI','er'); return; }
+  const canvas=document.getElementById('aiStlCanvas');
+  if(canvas.style.display==='none'||!_aiGeo){ toast('Carregue um arquivo .STL primeiro','er'); return; }
+  const prompt=(document.getElementById('aiPrompt').value||'').trim();
+
+  // Freeze rotation and capture
+  if(_aiAnimId){ cancelAnimationFrame(_aiAnimId); _aiAnimId=null; }
+  const stlDataURL=canvas.toDataURL('image/png');
+
+  document.getElementById('aiBtnGen').disabled=true;
+  try{
+    setAISt('🔍 Analisando modelo 3D com GPT-4o...');
+    const vRes=await fetch('https://api.openai.com/v1/chat/completions',{
+      method:'POST',
+      headers:{'Authorization':`Bearer ${key}`,'Content-Type':'application/json'},
+      body:JSON.stringify({
+        model:'gpt-4o',
+        messages:[{role:'user',content:[
+          {type:'image_url',image_url:{url:stlDataURL}},
+          {type:'text',text:`You are a product visualization expert. This is a 3D render of a plastic product. The user wants a professional marketing cover image with this style/context: "${prompt||'modern, clean, white background, professional studio lighting'}". Write a detailed DALL-E 3 prompt in English for a stunning product cover photo. Make it photorealistic, focus on the product shape, plastic material, composition and lighting. Return ONLY the DALL-E 3 prompt, nothing else.`}
+        ]}],
+        max_tokens:600
+      })
+    });
+    const vData=await vRes.json();
+    if(vData.error) throw new Error(vData.error.message);
+    const dallePrompt=vData.choices[0].message.content;
+
+    setAISt('🎨 Gerando imagem com DALL-E 3...');
+    const iRes=await fetch('https://api.openai.com/v1/images/generations',{
+      method:'POST',
+      headers:{'Authorization':`Bearer ${key}`,'Content-Type':'application/json'},
+      body:JSON.stringify({model:'dall-e-3',prompt:dallePrompt,n:1,size:'1792x1024',quality:'standard',response_format:'b64_json'})
+    });
+    const iData=await iRes.json();
+    if(iData.error) throw new Error(iData.error.message);
+    const dataURL='data:image/png;base64,'+iData.data[0].b64_json;
+
+    S.cover=dataURL;
+    document.getElementById('covInner').innerHTML=`<img src="${dataURL}">`;
+    document.getElementById('covRm').style.display='block';
+    pv();
+    setAISt('✅ Capa gerada com sucesso!');
+    switchCoverTab('upload');
+    toast('✅ Capa gerada e aplicada!','ok');
+  } catch(err){
+    setAISt('❌ '+err.message);
+    toast('Erro: '+err.message,'er');
+    if(_aiGeo) initAIStlGL(_aiGeo); // resume rotation
+  }
+  document.getElementById('aiBtnGen').disabled=false;
+}
+
+// Init: restore saved API key
+(function(){ const k=localStorage.getItem('oai_key'); if(k) document.getElementById('aiKey').value=k; })();
 
 /* ==========================================
    AUTO IMPORT FROM FOLDER
