@@ -445,7 +445,7 @@ body{
           <div class="ff">
             <label>Prompt de ambientação</label>
             <span class="sub">Descreva o estilo, ambiente ou contexto desejado</span>
-            <textarea id="aiPrompt" class="ta" rows="3" placeholder="Ex: fundo industrial escuro, iluminação lateral dramática, produto em destaque sobre superfície metálica..."></textarea>
+            <textarea id="aiPrompt" class="ta" rows="3" placeholder="Descreva apenas o fundo e a iluminação. Ex: fundo escuro gradiente antracite, iluminação lateral dramática, superfície preta fosca..."></textarea>
           </div>
           <button class="btn btn-or" style="width:100%" onclick="generateAICover()" id="aiBtnGen">✨ Gerar Capa com IA</button>
           <div id="aiStatus" class="ai-status"></div>
@@ -1091,7 +1091,8 @@ async function generateAICover(){
   document.getElementById('aiBtnGen').disabled = true;
   try{
     setAISt('🎨 Gerando capa com gpt-image-1...');
-    const editPrompt = `This is a product photo. Create a stunning professional marketing cover image based on this product. Keep the product exactly as it appears — same shape, colors and details. Style: ${prompt || 'professional studio lighting, clean background, premium product photography'}. 16:9 composition suitable for a product manual cover.`;
+    const styleInstr = prompt || 'professional studio lighting, dark gradient background, premium product photography';
+    const editPrompt = `IMPORTANT: Do NOT modify, redesign or alter the product in any way. Do NOT add, remove or change any part of the product structure, shape, components or colors. The product must remain 100% identical to the original photo.\n\nOnly change: the background, lighting and overall ambiance around the product.\n\nTask: Replace the background with a professional marketing environment. Apply this style to the background and lighting only: ${styleInstr}.\n\nThe product itself must look exactly like the original photo. 16:9 composition for a product manual cover.`;
 
     const fd = new FormData();
     fd.append('model', 'gpt-image-1');
