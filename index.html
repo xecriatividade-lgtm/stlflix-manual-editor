@@ -447,8 +447,15 @@ body{
             <span class="sub">Descreva o estilo, ambiente ou contexto desejado</span>
             <textarea id="aiPrompt" class="ta" rows="3" placeholder="Descreva apenas o fundo e a iluminação. Ex: fundo escuro gradiente antracite, iluminação lateral dramática, superfície preta fosca..."></textarea>
           </div>
-          <button class="btn btn-or" style="width:100%" onclick="generateAICover()" id="aiBtnGen">✨ Gerar Capa com IA</button>
+          <div style="display:flex;gap:8px">
+            <button class="btn" style="flex:0 0 auto;background:#374151;color:#fff;border:none" onclick="previewMask()" id="aiBtnMask" title="Ver quais pixels serão editados pela IA (branco=produto protegido, transparente=fundo editável)">🔍 Ver Máscara</button>
+            <button class="btn btn-or" style="flex:1" onclick="generateAICover()" id="aiBtnGen">✨ Gerar Capa com IA</button>
+          </div>
           <div id="aiStatus" class="ai-status"></div>
+          <div id="aiMaskPreview" style="display:none;margin-top:8px">
+            <div style="font-size:11px;color:#6b7280;margin-bottom:4px">Máscara detectada — branco = produto (protegido) · xadrez = fundo (editável pela IA)</div>
+            <img id="aiMaskImg" style="max-width:100%;border-radius:6px;border:1px solid #e5e7eb;background:url('data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2216%22 height=%2216%22><rect width=%228%22 height=%228%22 fill=%22%23ccc%22/><rect x=%228%22 y=%228%22 width=%228%22 height=%228%22 fill=%22%23ccc%22/><rect x=%228%22 y=%220%22 width=%228%22 height=%228%22 fill=%22%23fff%22/><rect x=%220%22 y=%228%22 width=%228%22 height=%228%22 fill=%22%23fff%22/></svg>')">
+          </div>
         </div>
       </div>
     </div>
@@ -1078,9 +1085,119 @@ function rmAIImg(){
   _aiImgBlob = null;
   document.getElementById('aiImgInner').innerHTML = '<div class="upz-ph"><span class="upz-ph-ico">📸</span><span>Clique para carregar imagem</span><span class="upz-ph-sub">Foto ou render do produto</span></div>';
   document.getElementById('aiImgRm').style.display = 'none';
+  document.getElementById('aiMaskPreview').style.display = 'none';
+}
+
+async function previewMask(){
+  if(!_aiImgBlob){ toast('Carregue uma foto primeiro','er'); return; }
+  document.getElementById('aiBtnMask').disabled = true;
+  setAISt('🔍 Gerando pré-visualização da máscara...');
+  try{
+    const maskBlob = await createBackgroundMask(_aiImgBlob);
+    const url = URL.createObjectURL(maskBlob);
+    document.getElementById('aiMaskImg').src = url;
+    document.getElementById('aiMaskPreview').style.display = 'block';
+    setAISt('✅ Máscara gerada — verifique se o produto está todo em branco');
+  } catch(e){
+    setAISt('❌ Erro ao gerar máscara: ' + e.message);
+  }
+  document.getElementById('aiBtnMask').disabled = false;
 }
 
 function setAISt(msg){ document.getElementById('aiStatus').textContent = msg; }
+
+/* ==========================================
+   BFS FLOOD-FILL BACKGROUND MASK GENERATOR
+   Builds a RGBA PNG mask where:
+     - Transparent (alpha=0)  → background → AI can edit this area
+     - White opaque (alpha=255) → product    → AI must preserve this area
+   ==========================================*/
+async function createBackgroundMask(imgBlob){
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onerror = reject;
+    img.onload = () => {
+      const w = img.naturalWidth, h = img.naturalHeight;
+      // Draw source image to canvas
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const d = ctx.getImageData(0, 0, w, h).data;
+
+      const TOLERANCE = 52; // color distance threshold for BFS growth
+      const bg = new Uint8Array(w * h); // 1 = background pixel
+
+      // Adaptive color diff: compares pixel at offset pi to rgb values
+      function diff(pi, r, g, b){
+        return Math.abs(d[pi]-r) + Math.abs(d[pi+1]-g) + Math.abs(d[pi+2]-b);
+      }
+
+      // BFS queue — start from corners + edge midpoints (assumed background)
+      const queue = [];
+      function tryAdd(idx){
+        if(idx < 0 || idx >= w*h || bg[idx]) return;
+        bg[idx] = 1;
+        queue.push(idx);
+      }
+
+      const seeds = [
+        0, w-1, (h-1)*w, (h-1)*w+(w-1),              // four corners
+        Math.floor(w/2),                               // top edge center
+        (h-1)*w + Math.floor(w/2),                     // bottom edge center
+        Math.floor(h/2)*w,                             // left edge center
+        Math.floor(h/2)*w + (w-1)                      // right edge center
+      ];
+      seeds.forEach(tryAdd);
+
+      // Adaptive BFS: each pixel uses its own color as seed for neighbors
+      let qi = 0;
+      while(qi < queue.length){
+        const idx = queue[qi++];
+        const pi  = idx * 4;
+        const r = d[pi], g = d[pi+1], b = d[pi+2];
+        const x = idx % w, y = (idx / w) | 0;
+        if(x > 0   && !bg[idx-1] && diff((idx-1)*4, r,g,b) <= TOLERANCE){ bg[idx-1]=1; queue.push(idx-1); }
+        if(x < w-1 && !bg[idx+1] && diff((idx+1)*4, r,g,b) <= TOLERANCE){ bg[idx+1]=1; queue.push(idx+1); }
+        if(y > 0   && !bg[idx-w] && diff((idx-w)*4, r,g,b) <= TOLERANCE){ bg[idx-w]=1; queue.push(idx-w); }
+        if(y < h-1 && !bg[idx+w] && diff((idx+w)*4, r,g,b) <= TOLERANCE){ bg[idx+w]=1; queue.push(idx+w); }
+      }
+
+      // Dilate product mask by 4px to capture edges/shadows of the product
+      const prod = new Uint8Array(w * h);
+      for(let i = 0; i < w*h; i++) if(!bg[i]) prod[i] = 1;
+      const dilated = prod.slice();
+      const R = 4;
+      for(let y = 0; y < h; y++) for(let x = 0; x < w; x++){
+        if(prod[y*w+x]){
+          for(let dy = -R; dy <= R; dy++) for(let dx = -R; dx <= R; dx++){
+            const ny = y+dy, nx = x+dx;
+            if(ny >= 0 && ny < h && nx >= 0 && nx < w) dilated[ny*w+nx] = 1;
+          }
+        }
+      }
+
+      // Build output mask ImageData
+      const out = new ImageData(w, h);
+      for(let i = 0; i < w*h; i++){
+        const mi = i * 4;
+        if(dilated[i]){
+          // Product area: white + fully opaque → API preserves
+          out.data[mi]=255; out.data[mi+1]=255; out.data[mi+2]=255; out.data[mi+3]=255;
+        } else {
+          // Background area: fully transparent → API edits here
+          out.data[mi]=0; out.data[mi+1]=0; out.data[mi+2]=0; out.data[mi+3]=0;
+        }
+      }
+
+      const mc = document.createElement('canvas');
+      mc.width = w; mc.height = h;
+      mc.getContext('2d').putImageData(out, 0, 0);
+      mc.toBlob(b => { URL.revokeObjectURL(img.src); resolve(b); }, 'image/png');
+    };
+    img.src = URL.createObjectURL(imgBlob);
+  });
+}
 
 async function generateAICover(){
   const key = (document.getElementById('aiKey').value || localStorage.getItem('oai_key') || '').trim();
@@ -1090,13 +1207,19 @@ async function generateAICover(){
 
   document.getElementById('aiBtnGen').disabled = true;
   try{
-    setAISt('🎨 Gerando capa com gpt-image-1...');
-    const styleInstr = prompt || 'professional studio lighting, dark gradient background, premium product photography';
-    const editPrompt = `IMPORTANT: Do NOT modify, redesign or alter the product in any way. Do NOT add, remove or change any part of the product structure, shape, components or colors. The product must remain 100% identical to the original photo.\n\nOnly change: the background, lighting and overall ambiance around the product.\n\nTask: Replace the background with a professional marketing environment. Apply this style to the background and lighting only: ${styleInstr}.\n\nThe product itself must look exactly like the original photo. 16:9 composition for a product manual cover.`;
+    // Step 1 – generate pixel-precise mask via BFS flood fill
+    setAISt('🔍 Detectando produto e fundo (máscara BFS)...');
+    const maskBlob = await createBackgroundMask(_aiImgBlob);
+
+    // Step 2 – build prompt (only describes what we want in the background)
+    setAISt('🎨 Enviando para gpt-image-1...');
+    const styleInstr = prompt || 'mesa preta fosca, ambiente externo com vegetação verde ao fundo, iluminação natural difusa, aspecto fotorrealista de impressão 3D com tons de cinza claro e cinza escuro';
+    const editPrompt = `Background replacement for a professional product manual cover. Keep the product exactly as-is — only change the background and lighting.\n\nBackground style: ${styleInstr}.\n\nThe product must stay pixel-perfect identical. 16:9 composition.`;
 
     const fd = new FormData();
     fd.append('model', 'gpt-image-1');
-    fd.append('image[]', _aiImgBlob, _aiImgBlob.name);
+    fd.append('image[]', _aiImgBlob, _aiImgBlob.name || 'product.jpg');
+    fd.append('mask', maskBlob, 'mask.png');
     fd.append('prompt', editPrompt);
     fd.append('n', '1');
     fd.append('size', '1536x1024');
